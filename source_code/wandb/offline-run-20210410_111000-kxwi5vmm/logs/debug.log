@@ -1,0 +1,27 @@
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_setup.py:_flush():69] setting env: {}
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_setup.py:_flush():69] setting login settings: {}
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_setup.py:_flush():69] setting login settings: {'mode': 'offline'}
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_init.py:_log_setup():336] Logging user logs to /home/ec2-user/SageMaker/DALLE-pytorch/source_code/wandb/offline-run-20210410_111000-kxwi5vmm/logs/debug.log
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_init.py:_log_setup():337] Logging internal logs to /home/ec2-user/SageMaker/DALLE-pytorch/source_code/wandb/offline-run-20210410_111000-kxwi5vmm/logs/debug-internal.log
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_init.py:init():369] calling init triggers
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_init.py:init():376] wandb.init called with sweep_config: {}
+config: {'num_tokens': 8192, 'smooth_l1_loss': False, 'num_resnet_blocks': 2, 'kl_loss_weight': 0}
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [wandb_init.py:init():418] starting backend
+2021-04-10 11:10:00,091 INFO    MainThread:33211 [backend.py:_multiprocessing_setup():71] multiprocessing start_methods=fork,spawn,forkserver, using: spawn
+2021-04-10 11:10:00,118 INFO    MainThread:33211 [backend.py:ensure_launched():123] starting backend process...
+2021-04-10 11:10:00,140 INFO    MainThread:33211 [backend.py:ensure_launched():128] started backend process with pid: 33268
+2021-04-10 11:10:00,142 INFO    MainThread:33211 [wandb_init.py:init():423] backend started and connected
+2021-04-10 11:10:00,145 INFO    MainThread:33211 [wandb_init.py:init():463] updated telemetry
+2021-04-10 11:10:00,146 INFO    MainThread:33211 [wandb_init.py:init():520] starting run threads in backend
+2021-04-10 11:10:01,243 INFO    MainThread:33211 [wandb_run.py:_console_start():1524] atexit reg
+2021-04-10 11:10:01,244 INFO    MainThread:33211 [wandb_run.py:_redirect():1371] redirect: SettingsConsole.REDIRECT
+2021-04-10 11:10:01,245 INFO    MainThread:33211 [wandb_run.py:_redirect():1376] Redirecting console.
+2021-04-10 11:10:01,247 INFO    MainThread:33211 [wandb_run.py:_redirect():1438] Redirects installed.
+2021-04-10 11:10:01,247 INFO    MainThread:33211 [wandb_init.py:init():544] run started, returning control to user process
+2021-04-10 11:10:08,162 INFO    MainThread:33211 [wandb_run.py:_atexit_cleanup():1494] got exitcode: 1
+2021-04-10 11:10:08,164 INFO    MainThread:33211 [wandb_run.py:_restore():1466] restore
+2021-04-10 11:10:10,173 INFO    MainThread:33211 [wandb_run.py:_wait_for_finish():1616] got exit ret: 
+2021-04-10 11:10:10,275 INFO    MainThread:33211 [wandb_run.py:_wait_for_finish():1616] got exit ret: done: true
+exit_result {
+}
+

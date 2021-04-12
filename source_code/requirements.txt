@@ -1,0 +1,8 @@
+wandb
+axial-positional-embedding
+einops
+tqdm
+omegaconf
+pytorch-lightning
+deepspeed
+albumentations
