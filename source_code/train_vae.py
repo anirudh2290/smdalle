@@ -523,7 +523,7 @@ if __name__ == '__main__':
             logs = {}
 
             if i % 100 == 0:
-                if (not args.model_parallel) and args.rank == 0:
+                if args.rank == 0:
 #                 if deepspeed_utils.is_root_worker():
                     k = NUM_IMAGES_SAVE
            
