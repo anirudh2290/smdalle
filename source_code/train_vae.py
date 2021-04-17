@@ -225,7 +225,7 @@ def main():
 
         smp.init(cfg)    
         torch.cuda.set_device(smp.local_rank())
-        args.rank = smp.rank()
+        args.rank = smp.dp_rank()
         args.world_size = smp.size()
     else:
         # initialize deepspeed
@@ -357,7 +357,7 @@ def main():
 
     dl = DataLoader(ds, BATCH_SIZE, 
                     shuffle=True,
-#                     drop_last=True,
+                    drop_last=args.model_parallel,
                     **args.kwargs)
 
 
@@ -454,15 +454,16 @@ def main():
         @smp.step
         def train_step(vae, images, temp):
 #             logger.debug(f"args.amp : {args.amp}")
-            with autocast(args.amp > 0):
+            with autocast(enabled = (args.amp > 0)):
                 loss, recons = vae(
                     images,
                     return_loss = True,
                     return_recons = True,
                     temp = temp)
-
+            
             scaled_loss = scaler.scale(loss) if args.amp else loss
             vae.backward(scaled_loss)
+#             torch.nn.utils.clip_grad_norm_(vae.parameters(), 5)
             return loss, recons
         
         @smp.step
@@ -513,7 +514,8 @@ def main():
         start = time.time()
         
         for i, (images, _) in enumerate(dl):
-            images = images.cuda()
+            images = images.to(device, non_blocking=True)
+            opt.zero_grad()
             
             if args.model_parallel:
                 loss, recons = train_step(vae, images, temp)
@@ -540,9 +542,7 @@ def main():
                     # some optimizers like adadelta from PT 1.8 dont like it when optimizer.step is called with no param
                     if len(list(vae.local_parameters())) > 0:
                         opt.step()
-                    opt.zero_grad()
             else:
-                opt.zero_grad()
                 loss.backward()
                 opt.step()
 
@@ -636,9 +636,9 @@ def main():
             else:
                 avg_loss = deepspeed_utils.average_all(loss)
             
-            logger.debug(f"args.rank 11 : {args.rank}")
+
             if args.rank == 0:
-                if i % 10 == 0:
+                if i % 100 == 0:
                     lr = sched.get_last_lr()[0]
                     print(epoch, i, f'lr - {lr:6f}, loss - {avg_loss.item()},')
 
@@ -654,7 +654,6 @@ def main():
             global_step += 1
     
             if args.rank == 0:
-                #             if args.rank == 0 and batch_idx % args.log_interval == 1:
                 # Every print_freq iterations, check the loss, accuracy, and speed.
                 # For best performance, it doesn't make sense to print these metrics every
                 # iteration, since they incur an allreduce and some host<->device syncs.
@@ -673,7 +672,6 @@ def main():
                 batch_time.update((time.time() - start) / args.log_interval)
                 end = time.time()
 
-                #                 if args.rank == 0:
                 print(
                     'Epoch: [{0}][{1}/{2}] '
                     'Train_Time={batch_time.val:.3f}: avg-{batch_time.avg:.3f}, '
