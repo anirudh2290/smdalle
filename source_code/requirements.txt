@@ -6,3 +6,4 @@ omegaconf
 pytorch-lightning
 deepspeed
 albumentations
+torchnet

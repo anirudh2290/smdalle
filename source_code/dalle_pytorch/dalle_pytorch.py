@@ -65,6 +65,17 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return self.net(x) + x
 
+    
+class EinsumComputation(nn.Module):
+    def __init__(self, weight):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, soft_one_hot):
+        sampled = einsum('b n h w, n d -> b d h w', soft_one_hot, self.weight)
+        return sampled
+
+
 class DiscreteVAE(nn.Module):
     def __init__(
         self,
@@ -130,6 +141,7 @@ class DiscreteVAE(nn.Module):
 
         # take care of normalization within class
         self.normalization = normalization
+        self.einsum = EinsumComputation(self.codebook.weight)
 
     def norm(self, images):
         if not exists(self.normalization):
@@ -180,7 +192,8 @@ class DiscreteVAE(nn.Module):
 
         temp = default(temp, self.temperature)
         soft_one_hot = F.gumbel_softmax(logits, tau = temp, dim = 1, hard = self.straight_through)
-        sampled = einsum('b n h w, n d -> b d h w', soft_one_hot, self.codebook.weight)
+#         sampled = einsum('b n h w, n d -> b d h w', soft_one_hot, self.codebook.weight)
+        sampled = self.einsum(soft_one_hot)
         out = self.decoder(sampled)
 
         if not return_loss:

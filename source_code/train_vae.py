@@ -14,12 +14,15 @@ import util
 # torch
 
 import torch
+import torch.nn as nn
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ExponentialLR
 import torch.backends.cudnn as cudnn
 from torch.cuda.amp import autocast
-# vision imports
 
+from torchnet.dataset import SplitDataset
+
+from einops import rearrange
 from torchvision import transforms as T
 import torch.utils.data as data
 from torch.utils.data import DataLoader, Dataset
@@ -37,11 +40,11 @@ from albumentations import (
 # dalle classes and utils
 
 from dalle_pytorch import deepspeed_utils
-from dalle_pytorch import DiscreteVAE
+from dalle_pytorch import DiscreteVAE, ResBlock
 
 try:
     import smdistributed.modelparallel.torch as smp
-    smp.init()
+    from smdistributed.modelparallel.torch.state_mod import state as smp_state
 except ImportError:
     pass
 
@@ -106,24 +109,14 @@ class AlbumentationImageDataset(Dataset):
 
     
 # argument parsing
-
-if __name__ == '__main__':
-#     import subprocess
-#     result = subprocess.run(['mount'], stdout=subprocess.PIPE)
-#     print(result.stdout.decode('utf-8'))
-#     result = subprocess.run(['df','-h'], stdout=subprocess.PIPE)
-#     print(result.stdout.decode('utf-8'))
-#     result = subprocess.run(['lsblk'], stdout=subprocess.PIPE)
-#     print(result.stdout.decode('utf-8'))
-
-
+def get_parser():
     parser = argparse.ArgumentParser()
 
     # parser.add_argument('--image_folder', type = str, required = True,
     #                     help='path to your folder of images for learning the discrete VAE and its codebook')
 
     ## Data/Model/Output
-    parser.add_argument('--image_folder', type = str, default = '../dataset/val2017')
+    parser.add_argument('--image_folder', type = str, default = '../../dataset/val2017')
     parser.add_argument('--model_dir', type=str, default='../model') 
     parser.add_argument('--output_dir', type=str, default='../output') 
     parser.add_argument('--image_size', type = int, required = False, default = 128,
@@ -151,13 +144,17 @@ if __name__ == '__main__':
     parser.add_argument('--num_worker', type=int, default=4)  
 
     # Setting for Model Parallel
-    parser.add_argument("--horovod", type=int, default=0)
-    parser.add_argument('--mp_parameters', type=str, default='')
-    parser.add_argument("--ddp", type=int, default=0)
-    parser.add_argument("--amp", type=int, default=0)
-    parser.add_argument("--save_full_model", type=bool, default=True)
+    parser.add_argument("--num_microbatches", type=int, default=4)
+    parser.add_argument("--num-partitions", type=int, default=2)
+    parser.add_argument("--horovod", type=bool, default=False)
+    parser.add_argument("--ddp", type=bool, default=True)
+    parser.add_argument("--amp", type=int, default=0)  ## if amp is 1, true 
     parser.add_argument("--pipeline", type=str, default="interleaved")
-    parser.add_argument("--assert-losses", type=int, default=0)
+    parser.add_argument("--optimize", type=str, default="speed")
+    parser.add_argument("--placement_strategy", type=str, default="spread")
+    parser.add_argument("--assert-losses", type=bool, default=False)
+    
+    parser.add_argument('--mp_parameters', type=str, default='')
     parser.add_argument("--partial-checkpoint",
                         type=str,
                         default="",
@@ -195,70 +192,80 @@ if __name__ == '__main__':
         metavar='N',
         help='how many batches to wait before logging training status')
     parser = deepspeed_utils.wrap_arg_parser(parser)
+    
+    return parser
 
+def main():
+    parser = get_parser()
     args = parser.parse_args()
     
-    args.use_cuda = int(args.num_gpus) > 0
-    args.kwargs = {
-        'num_workers': args.num_worker,
-        'pin_memory': True
-    } if args.use_cuda else {}
-    
-    args.device = torch.device("cuda" if args.use_cuda else "cpu")
-    
+    if not torch.cuda.is_available():
+        raise ValueError("The script requires CUDA support, but CUDA not available")
+
     if args.seed is not None:
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
-        cudnn.deterministic = True
-        if cudnn.deterministic:
-            warnings.warn('You have chosen to seed training. '
-                          'This will turn on the CUDNN deterministic setting, '
-                          'which can slow down your training considerably! '
-                          'You may see unexpected behavior when restarting '
-                          'from checkpoints.')
-
-    args.is_distributed = len(args.hosts) > 1 and args.backend is not None
-    args.is_multigpus = args.num_gpus > 1
-    args.multigpus_distributed = (args.is_distributed or args.is_multigpus)        
-    
-    logger.debug(f"args.image_folder : {args.image_folder}")
-    
-
+        
+    args.rank = -1
     args.world_size = 1
-    args.local_rank = 0
-    args.rank = 0
     
     if args.model_parallel:
-        args.world_size = smp.size()
-        args.local_rank = smp.local_rank()  # rank per host
+        args.deepspeed = False
+        cfg = {
+            "microbatches": args.num_microbatches,
+            "placement_strategy": args.placement_strategy,
+            "pipeline": args.pipeline,
+            "optimize": args.optimize,
+            "partitions": args.num_partitions,
+            "horovod": args.horovod,
+            "ddp": args.ddp,
+        }
+
+        smp.init(cfg)    
+        torch.cuda.set_device(smp.local_rank())
         args.rank = smp.rank()
-        args.dp_size = smp.dp_size()
-        args.dp_rank = smp.dp_rank()
-        logger.debug(f"args.world_size : {args.world_size}, args.local_rank : {args.local_rank}, args.rank : {args.rank}, \
-                    args.dp_size : {args.dp_size}, args.dp_rank : {args.dp_rank}")
+        args.world_size = smp.size()
     else:
         # initialize deepspeed
         print(f"args.deepspeed : {args.deepspeed}")
         deepspeed_utils.init_deepspeed(args.deepspeed)
-#     args.LEARNING_RATE = args.LEARNING_RATE * float(args.world_size)
+        if deepspeed_utils.is_root_worker():
+            args.rank = 0
+        
 
+    # args.LEARNING_RATE = args.LEARNING_RATE * float(args.world_size)
+    
+    cudnn.deterministic = True
+
+    if cudnn.deterministic:
+        warnings.warn('You have chosen to seed training. '
+                      'This will turn on the CUDNN deterministic setting, '
+                      'which can slow down your training considerably! '
+                      'You may see unexpected behavior when restarting '
+                      'from checkpoints.')
+    
+    args.kwargs = {
+        'num_workers': args.num_worker,
+        'pin_memory': True
+    }
+    
+    device = torch.device("cuda")
+    
+    logger.debug(f"args.image_folder : {args.image_folder}")
+    logger.debug(f"args.rank : {args.rank}")
+    
 
     ## SageMaker
     try:
-        if os.environ.get('SM_CHANNEL_TRAINING') is not None:
+        if os.environ.get('SM_MODEL_DIR') is not None:
             args.model_dir = os.environ.get('SM_MODEL_DIR')
             args.output_dir = os.environ.get('SM_OUTPUT_DATA_DIR')
             args.image_folder = os.environ.get('SM_CHANNEL_TRAINING')
-            args.num_gpus = os.environ['SM_NUM_GPUS']
-            args.hosts = json.loads(os.environ['SM_HOSTS'])
     except:
         logger.debug("not SageMaker")
         pass
-
-    # constants
-    logger.debug(f"args.image_folder : {args.image_folder}")
     
     IMAGE_SIZE = args.image_size
     IMAGE_PATH = args.image_folder
@@ -332,7 +339,7 @@ if __name__ == '__main__':
     dl = None
 
     # data
-    print(f"IMAGE_PATH : {IMAGE_PATH}")
+    logger.debug(f"IMAGE_PATH : {IMAGE_PATH}")
 #     ds = AlbumentationImageDataset(
 #         IMAGE_PATH,
 #         transform=transform,
@@ -343,16 +350,14 @@ if __name__ == '__main__':
         transform=transform,
     )
     
-    drop_last = args.model_parallel
-
-    sampler = data.distributed.DistributedSampler(
-        ds, num_replicas=int(args.world_size), rank=int(
-            args.rank)) if args.multigpus_distributed else None
+    if args.model_parallel and (args.ddp or args.horovod) and smp.dp_size() > 1:
+        partitions_dict = {f"{i}": 1 / smp.dp_size() for i in range(smp.dp_size())}
+        ds = SplitDataset(ds, partitions=partitions_dict)
+        ds.select(f"{smp.dp_rank()}")
 
     dl = DataLoader(ds, BATCH_SIZE, 
-                    shuffle=sampler is None,
-                    sampler=sampler,
-                    drop_last=drop_last,
+                    shuffle=True,
+#                     drop_last=True,
                     **args.kwargs)
 
 
@@ -369,58 +374,36 @@ if __name__ == '__main__':
         **vae_params,
         smooth_l1_loss = SMOOTH_L1_LOSS,
         kl_div_loss_weight = KL_LOSS_WEIGHT
-    )
-    # optimizer
-
-    get_codes = vae.get_codebook_indices
-    get_hard_recons = vae.decode
+    ).to(device)
+    # optimizer 
     
     opt = Adam(vae.parameters(), lr = LEARNING_RATE)
     sched = ExponentialLR(optimizer = opt, gamma = LR_DECAY_RATE)
     
-    logger.debug(f"args.local_rank : {args.local_rank}")
-    if args.local_rank is not None:
-        torch.cuda.set_device(args.local_rank)
-    else:
-        torch.cuda.set_device(0)
-    
-    if args.multigpus_distributed:
-        vae.cuda(args.local_rank)
+    if args.model_parallel:
+        import copy
+        dummy_codebook = copy.deepcopy(vae.codebook)
+        dummy_decoder = copy.deepcopy(vae.decoder)        
         
-        if args.model_parallel:
-            vae = smp.DistributedModel(vae)
-            args.scaler = smp.amp.GradScaler()
-            opt = smp.DistributedOptimizer(opt)
-            if args.partial_checkpoint:
-                args.checkpoint = smp.load(args.partial_checkpoint, partial=True)
-                vae.load_state_dict(args.checkpoint["model_state_dict"])
-                opt.load_state_dict(args.checkpoint["optimizer_state_dict"])
-            elif args.full_checkpoint:
-                args.checkpoint = smp.load(args.full_checkpoint, partial=False)
-                vae.load_state_dict(args.checkpoint["model_state_dict"])
-                opt.load_state_dict(args.checkpoint["optimizer_state_dict"])
-        else:
-            
-            vae = vae.cuda()
-    else:
-        vae = vae.cuda()
+        vae = smp.DistributedModel(vae)
+        scaler = smp.amp.GradScaler()
+        opt = smp.DistributedOptimizer(opt)
+        
+        if args.partial_checkpoint:
+            args.checkpoint = smp.load(args.partial_checkpoint, partial=True)
+            vae.load_state_dict(args.checkpoint["model_state_dict"])
+            opt.load_state_dict(args.checkpoint["optimizer_state_dict"])
+        elif args.full_checkpoint:
+            args.checkpoint = smp.load(args.full_checkpoint, partial=False)
+            vae.load_state_dict(args.checkpoint["model_state_dict"])
+            opt.load_state_dict(args.checkpoint["optimizer_state_dict"])
 
+ 
     assert len(ds) > 0, 'folder does not contain any images'
-    if (not args.model_parallel) and deepspeed_utils.is_root_worker():
+    
+    if (not args.model_parallel) and args.rank == 0:
         print(f'{len(ds)} images found for training')
-
-    def save_model(path):
-#         if not deepspeed_utils.is_root_worker():
-#             return
-
-        save_obj = {
-            'hparams': vae_params,
-            'weights': vae.state_dict()
-        }
-
-        torch.save(save_obj, path)
-
-    if (not args.model_parallel) and deepspeed_utils.is_root_worker():
+        
         # weights & biases experiment tracking
 
 #         import wandb
@@ -437,6 +420,18 @@ if __name__ == '__main__':
 #             job_type = 'train_model',
 #             config = model_config
 #         )
+
+    def save_model(path):
+        if not args.rank == 0:
+            return
+
+        save_obj = {
+            'hparams': vae_params,
+            'weights': vae.state_dict()
+        }
+
+        torch.save(save_obj, path)
+
 
     # distribute with deepspeed
     if not args.model_parallel:
@@ -457,19 +452,42 @@ if __name__ == '__main__':
     try:
         # Rubik: Define smp.step. Return any tensors needed outside.
         @smp.step
-        def train_step(vae, images, temp):        
-            with autocast():
+        def train_step(vae, images, temp):
+#             logger.debug(f"args.amp : {args.amp}")
+            with autocast(args.amp > 0):
                 loss, recons = vae(
                     images,
                     return_loss = True,
                     return_recons = True,
                     temp = temp)
-                print(f"loss : {loss}")
-#             loss = loss.mean()
-#             print(f"loss_mean : {loss}")
-            # scaled_loss = scaler.scale(loss) if args.amp else loss
-            vae.backward(loss)
+
+            scaled_loss = scaler.scale(loss) if args.amp else loss
+            vae.backward(scaled_loss)
             return loss, recons
+        
+        @smp.step
+        def get_codes_step(vae, images, k):
+            images = images[:k]
+            logits = vae.forward(images, return_logits = True)
+            codebook_indices = logits.argmax(dim = 1).flatten(1)
+            return codebook_indices
+
+        
+        def hard_recons_step(dummy_decoder, dummy_codebook, codebook_indices):
+            from functools import partial
+            for module in dummy_codebook.modules():
+                method = smp_state.patch_manager.get_original_method("forward", type(module))
+                module.forward = partial(method, module)
+            image_embeds = dummy_codebook.forward(codebook_indices)
+            b, n, d = image_embeds.shape
+            h = w = int(sqrt(n))
+            
+            image_embeds = rearrange(image_embeds, 'b (h w) d -> b d h w', h = h, w = w)
+            for module in dummy_decoder.modules():
+                method = smp_state.patch_manager.get_original_method("forward", type(module))
+                module.forward = partial(method, module)
+            hard_recons = dummy_decoder.forward(image_embeds)
+            return hard_recons
 
     except:
         pass        
@@ -479,6 +497,7 @@ if __name__ == '__main__':
     global_step = 0
     temp = STARTING_TEMP
 
+    
     for epoch in range(EPOCHS):
         ##
         batch_time = util.AverageMeter('Time', ':6.3f')
@@ -500,6 +519,7 @@ if __name__ == '__main__':
                 loss, recons = train_step(vae, images, temp)
                 # Rubik: Average the loss across microbatches.
                 loss = loss.reduce_mean()
+                recons = recons.reduce_mean()
             else:
                 loss, recons = distr_vae(
                     images,
@@ -507,14 +527,20 @@ if __name__ == '__main__':
                     return_recons = True,
                     temp = temp
                 )
-
+            
             if (not args.model_parallel) and args.deepspeed:
                 # Gradients are automatically zeroed after the step
                 distr_vae.backward(loss)
                 distr_vae.step()
             elif args.model_parallel:
-                opt.step()
-                opt.zero_grad()
+                if args.amp:
+                    scaler.step(opt)
+                    scaler.update()
+                else:
+                    # some optimizers like adadelta from PT 1.8 dont like it when optimizer.step is called with no param
+                    if len(list(vae.local_parameters())) > 0:
+                        opt.step()
+                    opt.zero_grad()
             else:
                 opt.zero_grad()
                 loss.backward()
@@ -522,18 +548,30 @@ if __name__ == '__main__':
 
             logs = {}
 
-            if i % 100 == 0:
+            if i % 10 == 0:
                 if args.rank == 0:
 #                 if deepspeed_utils.is_root_worker():
                     k = NUM_IMAGES_SAVE
-           
+                    
                     with torch.no_grad():
                         if args.model_parallel:
-                            codes = get_codes(images[:k])
-                            hard_recons = get_hard_recons(codes)
+                            model_dict = vae.state_dict()
+                            model_dict_updated = {}
+                            for key, val in model_dict.items():
+                                if "decoder" in key:
+                                    key = key.replace("decoder.", "")
+                                elif "codebook" in key:
+                                    key = key.replace("codebook.", "")
+                                model_dict_updated[key] = val
+                                    
+                            dummy_decoder.load_state_dict(model_dict_updated, strict=False)
+                            dummy_codebook.load_state_dict(model_dict_updated, strict=False)
+                            codes = get_codes_step(vae, images, k)
+                            codes = codes.reduce_mean().to(torch.long)
+                            hard_recons = hard_recons_step(dummy_decoder, dummy_codebook, codes)
                         else:
-                            codes = get_codes(images[:k])
-                            hard_recons = get_hard_recons(codes)
+                            codes = vae.get_codebook_indices(images[:k])
+                            hard_recons = vae.decode(codes)
 
                     images, recons = map(lambda t: t[:k], (images, recons))
                     images, recons, hard_recons, codes = map(lambda t: t.detach().cpu(), (images, recons, hard_recons, codes))
@@ -550,13 +588,13 @@ if __name__ == '__main__':
   
                 if args.model_parallel:
                     filename = f'{args.output_dir}/vae.pt'
-                    if args.dp_rank == 0:
+                    if smp.dp_rank == 0:
                         if args.save_full_model:
                             model_dict = vae.state_dict()
                             opt_dict = opt.state_dict()
                             smp.save(
                                 {
-                                    "weights": model_dict,
+                                    "model_state_dict": model_dict,
                                     "optimizer_state_dict": opt_dict
                                 },
                                 filename,
@@ -574,6 +612,8 @@ if __name__ == '__main__':
                                 partial=True,
                             )
                     smp.barrier()
+                    
+                   
                 else:
                     save_model(f'{args.output_dir}/vae.pt')
     #                     wandb.save(f'{args.output_dir}/vae.pt')
@@ -589,15 +629,15 @@ if __name__ == '__main__':
             # Collective loss, averaged
             if args.model_parallel:
                 avg_loss = loss.detach().clone()
-                print("args.world_size : {}".format(args.world_size))
+#                 print("args.world_size : {}".format(args.world_size))
                 avg_loss /= args.world_size
         
             
             else:
                 avg_loss = deepspeed_utils.average_all(loss)
-
+            
+            logger.debug(f"args.rank 11 : {args.rank}")
             if args.rank == 0:
-#             if deepspeed_utils.is_root_worker():
                 if i % 10 == 0:
                     lr = sched.get_last_lr()[0]
                     print(epoch, i, f'lr - {lr:6f}, loss - {avg_loss.item()},')
@@ -670,3 +710,24 @@ if __name__ == '__main__':
 #         wandb.finish()
 
 
+
+    if args.model_parallel:
+        if args.assert_losses:
+            if args.horovod or args.ddp:
+                # SM Distributed: If using data parallelism, gather all losses across different model
+                # replicas and check if losses match.
+
+                losses = smp.allgather(loss, smp.DP_GROUP)
+                for l in losses:
+                    print(l)
+                    assert math.isclose(l, losses[0])
+
+                assert loss < 0.18
+            else:
+                assert loss < 0.08
+
+        smp.barrier()
+        print("SMP training finished successfully")
+
+if __name__ == "__main__":
+    main()
