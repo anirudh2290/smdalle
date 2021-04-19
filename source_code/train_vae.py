@@ -115,11 +115,12 @@ def get_parser():
     # parser.add_argument('--image_folder', type = str, required = True,
     #                     help='path to your folder of images for learning the discrete VAE and its codebook')
 
+    
     ## Data/Model/Output
     parser.add_argument('--image_folder', type = str, default = '../../dataset/val2017')
-    parser.add_argument('--model_dir', type=str, default='../model') 
-    parser.add_argument('--output_dir', type=str, default='../output') 
-    parser.add_argument('--image_size', type = int, required = False, default = 128,
+    parser.add_argument('--model_dir', type=str, default='../model/vae') 
+    parser.add_argument('--output_dir', type=str, default='../output/vae') 
+    parser.add_argument('--image_size', type = int, required = False, default = 256,
                         help='image size')
     ## Hyperparameter
     parser.add_argument('--EPOCHS', type=int, default=20)
@@ -145,7 +146,7 @@ def get_parser():
 
     # Setting for Model Parallel
     parser.add_argument("--num_microbatches", type=int, default=4)
-    parser.add_argument("--num-partitions", type=int, default=2)
+    parser.add_argument("--num_partitions", type=int, default=2)
     parser.add_argument("--horovod", type=bool, default=False)
     parser.add_argument("--ddp", type=bool, default=True)
     parser.add_argument("--amp", type=int, default=0)  ## if amp is 1, true 
@@ -201,12 +202,6 @@ def main():
     
     if not torch.cuda.is_available():
         raise ValueError("The script requires CUDA support, but CUDA not available")
-
-    if args.seed is not None:
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        np.random.seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
         
     args.rank = -1
     args.world_size = 1
@@ -234,7 +229,13 @@ def main():
         if deepspeed_utils.is_root_worker():
             args.rank = 0
         
-
+    if args.seed is not None:
+        random.seed(args.seed)
+        torch.manual_seed(args.seed+args.rank)
+        np.random.seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+        
+        
     # args.LEARNING_RATE = args.LEARNING_RATE * float(args.world_size)
     
     cudnn.deterministic = True
