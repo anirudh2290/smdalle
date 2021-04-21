@@ -53,59 +53,59 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
-class AlbumentationImageDataset(Dataset):
-    def __init__(self, image_path, transform, args):
-        self.image_path = image_path
-        self.transform = transform
-        self.args = args
-        self.image_list = self._loader_file(self.image_path)
+# class AlbumentationImageDataset(Dataset):
+#     def __init__(self, image_path, transform, args):
+#         self.image_path = image_path
+#         self.transform = transform
+#         self.args = args
+#         self.image_list = self._loader_file(self.image_path)
 
-    def __len__(self):
-        return (len(self.image_list))
+#     def __len__(self):
+#         return (len(self.image_list))
 
-    def __getitem__(self, i):
+#     def __getitem__(self, i):
         
-        image = cv2.imread(self.image_list[i][0])
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+#         image = cv2.imread(self.image_list[i][0])
+#         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Augment an image
-        transformed = self.transform(image=image)["image"]
-        transformed_image = np.transpose(transformed,
-                                         (2, 0, 1)).astype(np.float32)
-        return torch.tensor(transformed_image,
-                            dtype=torch.float), self.image_list[i][1]
+#         # Augment an image
+#         transformed = self.transform(image=image)["image"]
+#         transformed_image = np.transpose(transformed,
+#                                          (2, 0, 1)).astype(np.float32)
+#         return torch.tensor(transformed_image,
+#                             dtype=torch.float), self.image_list[i][1]
 
-    def _loader_file(self, image_path):
-        extensions = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif',
-                      '.tiff', '.webp')
+#     def _loader_file(self, image_path):
+#         extensions = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif',
+#                       '.tiff', '.webp')
         
-        def is_valid_file(x: str) -> bool:
-            return x.lower().endswith(extensions)
+#         def is_valid_file(x: str) -> bool:
+#             return x.lower().endswith(extensions)
 
-        is_valid_file = cast(Callable[[str], bool], is_valid_file)
+#         is_valid_file = cast(Callable[[str], bool], is_valid_file)
 
-        self.classes = [d.name for d in os.scandir(image_path) if d.is_dir()]
-        self.classes.sort()
-        self.class_to_idx = {
-            cls_name: i
-            for i, cls_name in enumerate(self.classes)
-        }
+#         self.classes = [d.name for d in os.scandir(image_path) if d.is_dir()]
+#         self.classes.sort()
+#         self.class_to_idx = {
+#             cls_name: i
+#             for i, cls_name in enumerate(self.classes)
+#         }
 
-        instances = []
-        for target_class in sorted(self.class_to_idx.keys()):
-            class_index = self.class_to_idx[target_class]
-            target_dir = os.path.join(image_path, target_class)
-            if not os.path.isdir(target_dir):
-                continue
-            for root, _, fnames in sorted(os.walk(target_dir,
-                                                  followlinks=True)):
-                for fname in sorted(fnames):
-                    path = os.path.join(root, fname)
+#         instances = []
+#         for target_class in sorted(self.class_to_idx.keys()):
+#             class_index = self.class_to_idx[target_class]
+#             target_dir = os.path.join(image_path, target_class)
+#             if not os.path.isdir(target_dir):
+#                 continue
+#             for root, _, fnames in sorted(os.walk(target_dir,
+#                                                   followlinks=True)):
+#                 for fname in sorted(fnames):
+#                     path = os.path.join(root, fname)
 
-                    if is_valid_file(path):
-                        item = path, class_index
-                        instances.append(item)
-        return instances
+#                     if is_valid_file(path):
+#                         item = path, class_index
+#                         instances.append(item)
+#         return instances
 
     
 # argument parsing
@@ -119,8 +119,8 @@ def get_parser():
     ## Data/Model/Output
     parser.add_argument('--image_folder', type = str, default = '../../dataset/val2017')
     parser.add_argument('--model_dir', type=str, default='../model/vae') 
-    parser.add_argument('--output_dir', type=str, default='../output/vae') 
-    parser.add_argument('--image_size', type = int, required = False, default = 256,
+#     parser.add_argument('--output_dir', type=str, default='../output/vae') 
+    parser.add_argument('--image_size', type = int, required = False, default = 128,
                         help='image size')
     ## Hyperparameter
     parser.add_argument('--EPOCHS', type=int, default=20)
@@ -262,7 +262,7 @@ def main():
     try:
         if os.environ.get('SM_MODEL_DIR') is not None:
             args.model_dir = os.environ.get('SM_MODEL_DIR')
-            args.output_dir = os.environ.get('SM_OUTPUT_DATA_DIR')
+#             args.output_dir = os.environ.get('SM_OUTPUT_DATA_DIR')
             args.image_folder = os.environ.get('SM_CHANNEL_TRAINING')
     except:
         logger.debug("not SageMaker")
@@ -588,7 +588,7 @@ def main():
 #                     }
   
                 if args.model_parallel:
-                    filename = f'{args.output_dir}/vae.pt'
+                    filename = f'{args.model_dir}/vae.pt'
                     if smp.dp_rank == 0:
                         if args.save_full_model:
                             model_dict = vae.state_dict()
@@ -616,8 +616,8 @@ def main():
                     
                    
                 else:
-                    save_model(f'{args.output_dir}/vae.pt')
-    #                     wandb.save(f'{args.output_dir}/vae.pt')
+                    save_model(f'{args.model_dir}/vae.pt')
+    #                     wandb.save(f'{args.model_dir}/vae.pt')
 
                 # temperature anneal
 

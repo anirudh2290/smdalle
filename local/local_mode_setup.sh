@@ -69,7 +69,7 @@ if [ ! -d $dir ]; then
     mkdir -p $dir
 fi
 sudo cp -R /var/lib/docker /home/ec2-user/SageMaker/.container
-sudo cp daemon.json /etc/docker/daemon.json
+sudo cp ./local/daemon.json /etc/docker/daemon.json
 sudo service docker start
 
 if [ $RUNNING_ON_NOTEBOOK_INSTANCE -gt 0 ]; then
