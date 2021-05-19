@@ -1,0 +1,17 @@
+wandb
+axial-positional-embedding
+einops
+tqdm
+omegaconf
+pytorch-lightning
+deepspeed==0.3.15
+albumentations
+torchnet
+ftfy
+youtokentome
+tokenizers
+transformers
+dalle-pytorch
+#mpi4py
+nvgpu
+pynvml
