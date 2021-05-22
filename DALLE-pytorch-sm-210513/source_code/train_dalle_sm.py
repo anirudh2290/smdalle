@@ -10,13 +10,14 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 
 import torch
-import wandb  # Quit early if user doesn't have wandb installed.
+#import wandb  # Quit early if user doesn't have wandb installed.
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE1024, DiscreteVAE, DALLE
+#from dalle_pytorch import VQGanVAE1024
 from dalle_pytorch import distributed_utils
 from dalle_pytorch.loader import TextImageDataset
 from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer, SimpleTokenizer
@@ -63,7 +64,7 @@ def arg_setting():
     parser.add_argument(
         '--image_text_folder',
         type=str,
-        default='/opt/ml/input/data/training',
+        default='/home/ubuntu/dataset',
         help='path to your folder of images and text for learning the DALL-E')
 
 
@@ -180,7 +181,7 @@ def arg_setting():
 
     
     parser.add_argument('--num_worker', type=int, default=4)
-    parser.add_argument('--model_dir', type=str, default='model/dalle/')
+    parser.add_argument('--model_dir', type=str, default='/tmp')
 
     parser.add_argument('--num-gpus', type=int, default=8)
 
@@ -319,7 +320,7 @@ def save_model(args, path):
         return
     
     elif args.sagemakermp:
-        if smp.dp_rank == 0:
+        if smp.dp_rank() == 0:
             if args.save_full_model:
                 model_dict = args.distr_dalle.state_dict()
                 opt_dict = args.distr_opt.state_dict()
@@ -332,6 +333,7 @@ def save_model(args, path):
                     partial=False,
                 )
             else:
+                print(f"type of args.distr_dalle is {type(args.distr_dalle)}")
                 model_dict = args.distr_dalle.local_state_dict()
                 opt_dict = args.distr_opt.local_state_dict()
                 smp.save(
@@ -342,14 +344,13 @@ def save_model(args, path):
                     path,
                     partial=True,
                 )        
-        smp.barrier()
     # if not distr_backend.is_root_worker():
     if args.rank == 0:
         return
 
-    save_obj = {**save_obj, 'weights': args.dalle.state_dict()}
+    #save_obj = {**save_obj, 'weights': args.distr_dalle.state_dict()}
 
-    torch.save(save_obj, path)
+    #torch.save(save_obj, path)
 
 
 def get_trainable_params(model):
@@ -669,13 +670,15 @@ def main(args):
         model_config = dict(depth=DEPTH, heads=HEADS, dim_head=DIM_HEAD)
         
         
-        logger.debug(f"args.wandb_name : {args.wandb_name}, RESUME : {RESUME}")
+        #logger.debug(f"args.wandb_name : {args.wandb_name}, RESUME : {RESUME}")
         
+        '''
         run = wandb.init(
             project=args.wandb_name,  # 'dalle_train_transformer' by default
             resume=RESUME,
             config=model_config,
         )
+        '''
 
     # distribute
     distr_backend.check_batch_size(BATCH_SIZE)
@@ -736,8 +739,10 @@ def main(args):
                 # Gradients are automatically zeroed after the step
             elif args.sagemakermp:
                 if args.amp:
+                    print("Before scaler step and update")
                     scaler.step(args.distr_opt)
                     scaler.update()
+                    print("After scaler step and update")
                 else:
                     # some optimizers like adadelta from PT 1.8 dont like it when optimizer.step is called with no param
                     if len(list(args.distr_dalle.local_parameters())) > 0:
@@ -763,7 +768,10 @@ def main(args):
                     'loss': avg_loss.item()
                 }
 
+                print("after loss computation")
+
             if i % 100 == 0:
+                print(f"inside i % 100 == 0")
                 # if distr_backend.is_root_worker():
                 if args.rank == 0:
                     sample_text = text[:1]
@@ -772,30 +780,39 @@ def main(args):
                     decoded_text = tokenizer.decode(token_list)
                     
                     logger.debug(f"******* avoid_model_calls : {avoid_model_calls}")
+                    '''
                     if not avoid_model_calls:
                         # CUDA index errors when we don't guard this
                         image = dalle.generate_images(
                             text[:1], filter_thres=0.9)  # topk sampling at 0.9
+                    '''
 
-                    wandb.save(f'./dalle.pt')
+                    #wandb.save(f'./dalle.pt')
 
                     log = {
                         **log,
                     }
+                    '''
                     if not avoid_model_calls:
                         log['image'] = wandb.Image(image, caption=decoded_text)
+                    '''
 
-                args.distr_dalle = distr_dalle
+                print(f"after decode")
+                #args.distr_dalle = distr_dalle
                 args.dalle_params = dalle_params
                 args.vae_params = vae_params
                 args.using_deepspeed = using_deepspeed
                 args.DEEPSPEED_CP_AUX_FILENAME = DEEPSPEED_CP_AUX_FILENAME
 
+                print(f"before save")
                 save_model(args, f'{args.model_dir}/dalle.pt')
+                print(f"after save")
 
             # if distr_backend.is_root_worker():
+            '''
             if args.rank == 0:
                 wandb.log(log)
+            '''
                 
 #             text, images = prefetcher.next()
 
@@ -808,9 +825,11 @@ def main(args):
         if args.global_rank == 0:
             # save trained model to wandb as an artifact every epoch's end
 
+            '''
             model_artifact = wandb.Artifact('trained-dalle',
                                             type='model',
                                             metadata=dict(model_config))
+            '''
             # model_artifact.add_file('dalle.pt')
             run.log_artifact(model_artifact)
 
@@ -823,6 +842,7 @@ def main(args):
     save_model(args, f'{args.model_dir}/dalle-final.pt')
 
     # if distr_backend.is_root_worker():
+    '''
     if args.global_rank == 0:
         wandb.save('./dalle-final.pt')
         model_artifact = wandb.Artifact('trained-dalle',
@@ -832,6 +852,7 @@ def main(args):
         run.log_artifact(model_artifact)
 
         wandb.finish()
+    '''
 
 
 if __name__ == '__main__':
